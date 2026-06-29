@@ -161,7 +161,7 @@ static inline long labs_l(long x) { return x < 0 ? -x : x; }
 /* ═══════════════════════════════════════════════════════════
  *  Print thread  (SCHED_OTHER, runs on any core except Core 3)
  * ═══════════════════════════════════════════════════════════ */
-static void *print_thread(void *arg)
+static void *print_thread(void *arg) /*สำหรับแสดงผล (Logging Thread) โดยแยกออกจาก RT Loop เพื่อไม่ให้ printf() หรือ write() ไปทำให้ Real-Time Loop ช้าลง*/
 {
     (void)arg;
 
