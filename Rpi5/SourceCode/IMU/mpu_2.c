@@ -32,6 +32,7 @@ static int i2c_io(int fd, uint8_t reg, uint8_t *buf, int len, int is_read) {
 
 int main(void) {
 // 1. RT Environment Setup (Memlock, CPU Affinity, SCHED_FIFO)
+    /*ล็อคระบบให้ทำงานแบบห้ามดีเลย์ (Real-Time Setup) สั่งล็อคแรม (mlockall) และย้ายโปรแกรมไปวิ่งที่ CPU Core 3 แยกต่างหาก (sched_setaffinity) พร้อมให้สิทธิ์ความสำคัญสูงสุด เพื่อให้บอร์ดประมวลผลคำสั่งนี้อย่างต่อเนื่อง ไม่มีอาการกระตุกหรือโดนโปรแกรมอื่นแย่งงาน*/
     if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) perror("mlockall");
     volatile char stack_touch[65536]; memset((void *)stack_touch, 0, sizeof stack_touch);
 
@@ -42,6 +43,7 @@ int main(void) {
     if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0) return perror("scheduler"), 1;
 
 // 2. GPIO Setup (libgpiod v2) -> GPIO 17
+    /*เปิด-ปิดไฟที่ขาขั้วสัญญาณเพื่อเช็คความเร็ว (Scope Pin) ควบคุมขา GPIO 17 ให้ปล่อยไฟ 5V (HIGH) ตอนเริ่มอ่านค่าเซนเซอร์ และดับไฟ (LOW) ทันทีที่คำนวณเสร็จ เพื่อให้เราเอาเครื่องวัด (Oscilloscope) มาคีบดูได้ว่าโปรแกรมทำงานได้แม่นยำทุกๆ 5 มิลลิวินาที (200 Hz) จริงไหม*/
     struct gpiod_chip *chip = gpiod_chip_open("/dev/gpiochip0");
     if (!chip) return perror("gpio chip"), 1;
     
@@ -60,6 +62,7 @@ int main(void) {
     if (!l_req) return perror("gpio req"), 1;
 
 // 3. MPU-6050 Initialization
+    /*อ่านค่าแล้วกรองสัญญาณรบกวน (Sensor Fusion)ดึงค่าความเร่งและมุมหมุนจากชิป MPU-6050 ผ่าน I2C นำมาเข้าสูตรตัวกรอง Complementary Filter (Alpha 0.98) เพื่อหักล้างสัญญาณรบกวน ผลลัพธ์ที่ได้คือค่ามุมองศา (Pitch, Roll, Yaw) ที่นิ่ง แม่นยำ และไม่สั่นไหวครับ*/
     int fd = open("/dev/i2c-1", O_RDWR);
     if (fd < 0) return perror("i2c open"), 1;
     
@@ -71,7 +74,7 @@ int main(void) {
     float pitch = 0.0f, roll = 0.0f, yaw = 0.0f;
     struct timespec deadline; clock_gettime(CLOCK_MONOTONIC, &deadline);
 
-// 4. Main Loop
+// 4. Main Loopmpu_sim
     while (1) {
         deadline.tv_nsec += PERIOD_NS;
         if (deadline.tv_nsec >= 1000000000L) { deadline.tv_sec++; deadline.tv_nsec -= 1000000000L; }
@@ -85,7 +88,7 @@ int main(void) {
             continue;
         }
 
-        // Decode & Scale Data
+        // Decode & Scale Data = แปลงข้อมูลดิบระดับฮาร์ดแวร์
         float ax = (int16_t)((raw[0] << 8) | raw[1]) / 16384.0f;
         float ay = (int16_t)((raw[2] << 8) | raw[3]) / 16384.0f;
         float az = (int16_t)((raw[4] << 8) | raw[5]) / 16384.0f;
