@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"runtime"
@@ -32,15 +33,31 @@ var (
 	frameMutex   sync.RWMutex
 )
 
+// ฟังก์ชันสำหรับล็อคโปรแกรมไว้ที่ CPU Core ที่ระบุ
+func setCPUAffinity(coreID int) error {
+	var mask unix.CPUSet
+	mask.Zero()
+	mask.Set(coreID)
+	return unix.SchedSetaffinity(0, &mask)
+}
+
 func main() {
 	device := flag.String("device", "/dev/video0", "Video device path")
 	inputFormat := flag.String("input_format", "mjpeg", "Input format")
 	outDir := flag.String("out", "frames", "Output directory")
 	flag.Parse()
 
+	// ต้องรันบน Thread เดียวกันตลอดเพื่อประสิทธิภาพ Real-time
 	runtime.LockOSThread()
-	debug.SetGCPercent(-1)
 	
+	// ล็อคให้โปรแกรมทำงานที่ Core 3
+	if err := setCPUAffinity(3); err != nil {
+		log.Printf("WARNING: Failed to set CPU affinity: %v", err)
+	}
+
+	debug.SetGCPercent(-1) // ปิด GC
+	
+	// ตั้งค่า Real-time Priority
 	priority := uintptr(90)
 	param := struct{ sched_priority int32 }{sched_priority: int32(priority)}
 	_, _, _ = syscall.Syscall(syscall.SYS_SCHED_SETSCHEDULER, 0, 1, uintptr(unsafe.Pointer(&param)))
@@ -68,6 +85,7 @@ func main() {
 	go io.Copy(io.Discard, stderrPipe)
 	_ = cmd.Start()
 
+	// Goroutine สำหรับอ่านเฟรม
 	go func() {
 		reader := bufio.NewReaderSize(stdout, 1<<20)
 		buf := make([]byte, maxFrameSize)
@@ -97,8 +115,9 @@ func main() {
 		}
 	}()
 
+	// ลูปบันทึกไฟล์ตามเวลาที่กำหนด (50ms)
 	ticker := int64(50000000)
-	nextTimeNs := unix.NsecToTimespec(0) // dummy init
+	nextTimeNs := unix.NsecToTimespec(0)
 	_ = unix.ClockGettime(unix.CLOCK_REALTIME, &nextTimeNs)
 	nextNs := nextTimeNs.Nano() + ticker
 
