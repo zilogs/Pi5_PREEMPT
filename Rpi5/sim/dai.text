@@ -1,0 +1,23 @@
+[1] shared->ranwriter.store(value, ...)
+         │
+         │  CPU คำนวณ virtual address ของ shared->ranwriter
+         │  เช่น 0x0000700000000000  (นี่คือ SHM_FIXED_ADDR ที่เราตั้งไว้ก่อนหน้า!)
+         ↓
+[2] MMU (Memory Management Unit) — วงจรฮาร์ดแวร์ในตัว CPU
+         │
+         │  แปล virtual address → physical address
+         │  โดยเช็คจาก "page table" (ตารางที่ OS สร้างไว้ตอน mmap())
+         ↓
+[3] Physical address (เช่น 0x0000000012340000)
+         │
+         │  ส่งผ่าน address bus ไปยัง Memory Controller
+         ↓
+[4] Memory Controller (อยู่ในตัว CPU เช่นกัน บน ARM64 สมัยใหม่)
+         │
+         │  แปล physical address → (row address, column address, bank)
+         │  ตามที่คุยกันไว้ก่อนหน้า (row/col ของ DRAM)
+         ↓
+[5] ส่งสัญญาณ RAS (เลือก row) → ACT (activate) → CAS (เลือก column) → WRITE
+         │
+         ↓
+[6] DRAM chip จริง — เขียนแรงดันไฟฟ้าลง capacitor cell ที่ตำแหน่งนั้น

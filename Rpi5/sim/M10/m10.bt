@@ -1,0 +1,104 @@
+//------------------------------------------------
+//--- 010 Editor v7.0.2 Binary Template
+//
+//      File: GPS M10 u-blox protocol
+//   Authors: Mr.Suwatchai
+//   Version: V1.0
+//   Purpose:
+//  Category: u-blox decoder
+// File Mask: -
+//  ID Bytes: -
+//   History: V1.0 start up
+//------------------------------------------------
+#include    "m10.h"
+
+//------------------------------------------------
+typedef struct {
+    SetColor( cRed , cBlack );
+    UBYTE   SYNC1 <format=hex>;
+    // NEMA
+    if ( SYNC1 == '$' ) {
+        SetColor( cGreen , cGray );
+        UBYTE   SYNC2 <format=hex>;
+        if ( SYNC2 == 'G' ) {
+            do {
+                UBYTE   SYNC3 <format=hex>;
+            } while ( SYNC3 != 0x0A );
+            // Exit(-2);
+        }
+    }
+    // UBX
+    if ( SYNC1 == 0xB5 ) {
+        SetColor( cGreen , cBlack );
+        UBYTE   SYNC2 <format=hex>;
+        if ( SYNC2 == 0x62 ) {
+            // Class
+            UBYTE   Class;
+            UBYTE   Class_ID;
+            UINT16  PayloadSize;
+            SetColor( cBlack , cYellow );
+
+            switch ( Class ) {
+            // UBX_NAV
+            case CLASS_NAV :
+                switch ( Class_ID ) {
+                case CLASS_NAV_PVT :
+                    UBX_NAV_PVT ubx_nav_pvt;
+                    break;
+                case CLASS_NAV_STATUS :
+                    UBX_NAV_STATUS ubx_nav_status;
+                    // Exit(-1);
+                    break;
+                case CLASS_NAV_CLOCK :
+                    UBX_NAV_CLOCK ubx_nav_clock;
+                    // Exit(-1);
+                    break;
+                default :
+                    UBYTE   Payload[ PayloadSize ];
+                    // Exit(-1);
+                    break;
+                }
+                break;
+
+            // UBX_MON
+            case CLASS_MON :
+                switch ( Class_ID ) {
+                case CLASS_MON_RF :
+                    UBX_MON_RF ubx_mon_rf;
+                    // Exit(-1);
+                    break;
+                case CLASS_MON_SPAN :
+                    UBX_MON_SPAN ubx_mon_span;
+                    // Exit(-1);
+                    break;
+                default :
+                    UBYTE   Payload[ PayloadSize ];
+                    // Exit(-1);
+                    break;
+                }
+                break;
+
+            default :
+                UBYTE   Payload[ PayloadSize ];
+                // Exit(-1);
+                break;
+            }
+
+            SetColor( cGray , cBlack );
+            WORD    CHECKSUM <format=hex>;
+        }
+    }
+    SetColor( cRed , cBlack );
+} U_BLOX_PROTOCOL;
+
+/*------------------------------------------------------------------------
+
+ ------------------------------------------------------------------------*/
+
+LittleEndian();
+SetBackColor( cLtGray );
+
+while ( !FEof() ) {
+    U_BLOX_PROTOCOL u_blox;
+}
+

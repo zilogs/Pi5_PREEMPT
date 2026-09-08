@@ -2,46 +2,39 @@
 import sys
 import csv
 
-# bit layout: [63:48] counter | [47:34] value*100 | [33:0] ts_ms_of_day
-COUNTER_SHIFT = 48
-VALUE_SHIFT   = 34
-COUNTER_MASK  = (1 << 16) - 1
-VALUE_MASK    = (1 << 14) - 1
-TS_MASK       = (1 << 34) - 1
-
-
-def decode(packed: int):
-    counter    = (packed >> COUNTER_SHIFT) & COUNTER_MASK
-    value_bits = (packed >> VALUE_SHIFT) & VALUE_MASK
-    ts_ms      = packed & TS_MASK
-
-    value = value_bits / 100.0
-    ts_sec = ts_ms / 1000.0
-    h = int(ts_sec // 3600)
-    m = int((ts_sec % 3600) // 60)
-    s = ts_sec % 60
-    ts_str = f"{h:02d}:{m:02d}:{s:06.3f}"
-
-    return counter, value, ts_str
-
-
 def main(in_path: str, out_path: str):
-    with open(in_path, newline="") as fin, open(out_path, "w", newline="") as fout:
-        reader = csv.DictReader(fin)
+    with open(in_path, "r") as fin, open(out_path, "w", newline="") as fout:
         writer = csv.writer(fout)
-        writer.writerow(["packed", "counter", "value", "time_of_day"])
+        writer.writerow(["raw_bits", "decimal_value"])
 
         count = 0
-        for row in reader:
-            packed = int(row["packed"])
-            counter, value, ts_str = decode(packed)
-            writer.writerow([packed, counter, value, ts_str])
-            count += 1
+        for line in fin:
+            raw_str = line.strip()
+            
+            # ข้ามบรรทัดว่าง หรือบรรทัดที่เป็น Header
+            if not raw_str or raw_str == "value":
+                continue
+            
+            # ถ้าเป็นเลขฐานสอง 16 บิต ให้แปลงเป็นเลขฐานสิบ
+            if all(c in '01' for c in raw_str) and len(raw_str) == 16:
+                decimal_val = int(raw_str, 2)
+                writer.writerow([raw_str, decimal_val])
+                count += 1
+            else:
+                # เผื่อกรณีที่เป็นเลขฐานสิบอยู่แล้ว
+                try:
+                    decimal_val = int(raw_str)
+                    writer.writerow([raw_str, decimal_val])
+                    count += 1
+                except ValueError:
+                    pass
 
-    print(f"decode แล้ว {count} แถว -> {out_path}")
-
+    print(f"แปลงและถอดรหัสข้อมูลเรียบร้อยแล้ว {count} แถว -> {out_path}")
 
 if __name__ == "__main__":
-    in_path  = sys.argv[1] if len(sys.argv) > 1 else "reader_log.csv"
-    out_path = sys.argv[2] if len(sys.argv) > 2 else "reader_log_decoded.csv"
+    in_path  = sys.argv[1] if len(sys.argv) > 1 else "/home/kanchai/Desktop/SHM/sim/writer_log.log"
+    out_path = sys.argv[2] if len(sys.argv) > 2 else "/home/kanchai/Desktop/SHM/sim/writer_decimal_log.csv"
+
+    # in_path  = sys.argv[1] if len(sys.argv) > 1 else "/home/kanchai/Desktop/SHM/sim/reader_log.log"
+    # out_path = sys.argv[2] if len(sys.argv) > 2 else "/home/kanchai/Desktop/SHM/sim/reader_decimal_log.csv"
     main(in_path, out_path)
