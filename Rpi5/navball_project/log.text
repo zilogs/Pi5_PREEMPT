@@ -1,0 +1,83 @@
+cd camera2/camera3 && go build -o ../../camera_bin camera.go
+cd camera2/snapshot && go build -o ../../camera2_bin snapshot.go
+gcc -O2 -Wall -Wextra -I/home/kanchai/Desktop/Tast/navball_project -o mpu6050_bin sensor/mpu6050.c -lm -lrt -lgpiod
+cd renderer_app && go build -o ../renderer_bin .
+=== Killing leftover processes (ordered) ===
+=== Sweeping any stragglers without a pidfile ===
+Cleanup done.
+=== Clearing system caches and swap ===
+sync
+sudo sh -c 'sync && echo 3 > /proc/sys/vm/drop_caches && swapoff -a && swapon -a'
+=== Starting all programs (Press Ctrl+C to stop) ===
+TS=3463.258504110 loop=200      P= -60.53 R=-177.77 Y=   1.11 jitter=3052ns
+TS=3464.258506313 loop=400      P= -60.54 R=-177.72 Y=   1.29 jitter=5255ns
+TS=3465.258515259 loop=600      P= -60.52 R=-177.71 Y=   1.50 jitter=14201ns
+TS=3466.258517597 loop=800      P= -60.56 R=-177.70 Y=   1.68 jitter=16539ns
+TS=3467.258518715 loop=1000     P= -60.51 R=-177.71 Y=   1.86 jitter=17657ns
+TS=3468.258515168 loop=1200     P= -60.53 R=-177.75 Y=   2.01 jitter=14110ns
+TS=3469.258512494 loop=1400     P= -60.56 R=-177.70 Y=   2.21 jitter=11436ns
+TS=3470.258513046 loop=1600     P= -60.53 R=-177.74 Y=   2.41 jitter=11988ns
+TS=3471.258510988 loop=1800     P= -60.53 R=-177.75 Y=   2.59 jitter=9930ns
+TS=3472.258519007 loop=2000     P= -60.53 R=-177.67 Y=   2.73 jitter=17949ns
+TS=3473.258524788 loop=2200     P= -60.54 R=-177.71 Y=   2.95 jitter=23730ns
+TS=3474.258524923 loop=2400     P= -60.49 R=-177.66 Y=   3.12 jitter=23865ns
+TS=3475.258515171 loop=2600     P= -60.54 R=-177.75 Y=   3.31 jitter=14113ns
+TS=3476.258517830 loop=2800     P= -60.53 R=-177.69 Y=   3.50 jitter=16772ns
+TS=3477.258516379 loop=3000     P= -60.55 R=-177.66 Y=   3.71 jitter=15321ns
+TS=3478.258513080 loop=3200     P= -60.57 R=-177.65 Y=   3.91 jitter=12022ns
+TS=3479.258516116 loop=3400     P= -60.54 R=-177.69 Y=   4.09 jitter=15058ns
+TS=3480.258515580 loop=3600     P= -60.56 R=-177.72 Y=   4.27 jitter=14522ns
+TS=3481.258512695 loop=3800     P= -60.52 R=-177.74 Y=   4.45 jitter=11637ns
+TS=3482.258513275 loop=4000     P= -60.53 R=-177.68 Y=   4.65 jitter=12217ns
+TS=3483.258515877 loop=4200     P= -60.51 R=-177.70 Y=   4.85 jitter=14819ns
+TS=3484.258513499 loop=4400     P= -60.50 R=-177.71 Y=   5.03 jitter=12441ns
+TS=3485.258519846 loop=4600     P= -60.52 R=-177.67 Y=   5.21 jitter=18788ns
+TS=3486.258509769 loop=4800     P= -60.50 R=-177.64 Y=   5.41 jitter=8711ns
+TS=3487.258511250 loop=5000     P= -60.54 R=-177.67 Y=   5.59 jitter=10192ns
+TS=3488.258512419 loop=5200     P= -60.48 R=-177.70 Y=   5.78 jitter=11361ns
+TS=3489.258511608 loop=5400     P= -60.49 R=-177.71 Y=   5.97 jitter=10550ns
+TS=3490.258511541 loop=5600     P= -60.56 R=-177.68 Y=   6.16 jitter=10483ns
+TS=3491.258513680 loop=5800     P= -60.54 R=-177.67 Y=   6.36 jitter=12622ns
+TS=3492.258515470 loop=6000     P= -60.51 R=-177.66 Y=   6.55 jitter=14412ns
+TS=3493.258513891 loop=6200     P= -60.54 R=-177.61 Y=   6.79 jitter=12833ns
+TS=3494.258518796 loop=6400     P= -60.52 R=-177.74 Y=   6.90 jitter=17738ns
+TS=3495.258514815 loop=6600     P= -60.48 R=-177.70 Y=   7.12 jitter=13757ns
+TS=3496.258511002 loop=6800     P= -60.54 R=-177.64 Y=   7.31 jitter=9944ns
+TS=3497.258512637 loop=7000     P= -60.53 R=-177.68 Y=   7.51 jitter=11579ns
+TS=3498.258511700 loop=7200     P= -60.57 R=-177.70 Y=   7.71 jitter=10642ns
+TS=3499.258514820 loop=7400     P= -60.50 R=-177.71 Y=   7.89 jitter=13762ns
+TS=3500.258509258 loop=7600     P= -60.53 R=-177.66 Y=   8.09 jitter=8200ns
+TS=3501.258522624 loop=7800     P= -60.52 R=-177.73 Y=   8.30 jitter=21566ns
+TS=3502.258510789 loop=8000     P= -60.55 R=-177.76 Y=   8.46 jitter=9731ns
+TS=3503.258511548 loop=8200     P= -60.49 R=-177.71 Y=   8.66 jitter=10490ns
+TS=3504.258513236 loop=8400     P= -60.51 R=-177.71 Y=   8.86 jitter=12178ns
+TS=3505.258515759 loop=8600     P= -60.50 R=-177.71 Y=   9.06 jitter=14701ns
+TS=3506.258512322 loop=8800     P= -60.54 R=-177.70 Y=   9.25 jitter=11264ns
+TS=3507.258515869 loop=9000     P= -60.55 R=-177.74 Y=   9.44 jitter=14811ns
+TS=3508.258521084 loop=9200     P= -60.54 R=-177.79 Y=   9.63 jitter=20026ns
+TS=3509.258513672 loop=9400     P= -60.56 R=-177.73 Y=   9.85 jitter=12614ns
+TS=3510.258514133 loop=9600     P= -60.54 R=-177.77 Y=  10.02 jitter=13075ns
+TS=3511.258513448 loop=9800     P= -60.54 R=-177.69 Y=  10.21 jitter=12390ns
+TS=3512.258522006 loop=10000    P= -60.52 R=-177.68 Y=  10.39 jitter=20948ns
+TS=3513.258513418 loop=10200    P= -60.51 R=-177.66 Y=  10.61 jitter=12360ns
+TS=3514.258517443 loop=10400    P= -60.53 R=-177.76 Y=  10.79 jitter=16385ns
+TS=3515.258515193 loop=10600    P= -60.50 R=-177.70 Y=  10.98 jitter=14135ns
+TS=3516.258512297 loop=10800    P= -60.52 R=-177.68 Y=  11.19 jitter=11239ns
+TS=3517.258511941 loop=11000    P= -60.53 R=-177.77 Y=  11.37 jitter=10883ns
+TS=3518.258505716 loop=11200    P= -60.50 R=-177.70 Y=  11.57 jitter=4658ns
+TS=3519.258506993 loop=11400    P= -60.53 R=-177.74 Y=  11.76 jitter=5935ns
+TS=3520.258504810 loop=11600    P= -60.50 R=-177.74 Y=  11.95 jitter=3752ns
+TS=3521.258518759 loop=11800    P= -60.55 R=-177.69 Y=  12.15 jitter=17701ns
+TS=3522.258513487 loop=12000    P= -60.54 R=-177.72 Y=  12.36 jitter=12429ns
+TS=3523.258514866 loop=12200    P= -60.54 R=-177.73 Y=  12.55 jitter=13808ns
+TS=3524.258511618 loop=12400    P= -60.52 R=-177.74 Y=  12.72 jitter=10560ns
+TS=3525.258510631 loop=12600    P= -60.54 R=-177.80 Y=  12.91 jitter=9573ns
+=== Shutting down processes (renderer -> mpu6050 -> camera2 -> camera) ===
+=== Killing leftover processes (ordered) ===
+Stopping mpu6050 (pid 4340)...
+TS=3526.258509961 loop=12800    P= -60.55 R=-177.76 Y=  13.09 jitter=8903ns
+Stopping camera2 (pid 4309)...
+Stopping camera (pid 4282)...
+=== Sweeping any stragglers without a pidfile ===
+Stopping stray camera_bin (4277)...
+Cleanup done.
