@@ -1,0 +1,28 @@
+[system]
+pin_core = 3
+log_core = 1
+receiver_rt_prio = 69
+writer_rt_prio = 95
+
+[writer]
+period_ns = 5000000
+protocol = "i2c"             # "spi" or "i2c"
+imu_chip = "auto"            # "auto" | "icm42688" | "mpu6050"
+i2c_addr = 0x68              # 0x68 or 0x69 (Used for I2C only)
+imu_interface = "/dev/i2c-1" # SPI: "/dev/spidev1.0" | I2C: "/dev/i2c-1"
+gpio_chip_path = "/dev/gpiochip4"
+gpio_line_pin = 13
+imu_log_ring_size = 1024
+imu_log_file_path = "imu.log"    
+
+[receiver]
+default_source = "/dev/ttyAMA0"
+baud_rate = 115200             
+ring_hi_water = 128            
+pid_file_path = "receiver.pid" 
+log_file_path = "gps.log"      
+
+[shm]
+sensor_shm_name = "/sensor"    
+sensor_shm_size = 6144         
+ring_buffer_size = 64

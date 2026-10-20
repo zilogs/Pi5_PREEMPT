@@ -1,0 +1,50 @@
+# config.toml for camcap — run: ./camcap -config config.toml
+
+[camera]
+width   = 640
+height  = 400
+fps     = 60
+command = "rpicam-vid"   # Must output raw frame to stdout
+args    = ["--width", "{width}", "--height", "{height}", "--framerate", "{fps}",
+           "--codec", "yuv420", "--saturation", "0.0", "--nopreview", "-t", "0", "-o", "-"]
+format      = "yuv420"   # yuv420 | gray | yuyv
+use_taskset = true       # Wrap command with taskset -c <cpu.core>
+decimate    = 3          # Save every Nth frame (60fps/3 = 20fps)
+
+[cpu]
+core      = 3   # Core for all real-time threads + camera
+file_core = 1   # Core for PNG file writer thread
+
+[priority]
+publisher = 80
+reader    = 60
+camera    = 50
+encoder   = 50
+
+[shm]
+path       = "/dev/shm/video"
+latency_ms = 40                 # 0 = Disable time-grid alignment delay
+max_png_kb = 400                # Must = 400 (matches MAX_PNG_SIZE in shm_common.h)
+rb_size    = 20                 # Must = 20 (matches CAM_RB_SIZE in shm_common.h)
+
+[runtime]
+gomaxprocs   = 2                # Number of OS threads Go can use (GOMAXPROCS)
+mem_limit_mb = 768              # Go runtime memory limit (MB)
+
+[output]
+enabled     = false              # true = Save PNG to dir / false = Disable saving
+dir         = "captures"
+min_free_mb = 1024              # Stop saving PNG if free disk space is below this
+
+[stats]
+interval_ms      = 500          # Interval for printing stats + checking config reload (ms)
+log_unknown_keys = true         # true = Log unrecognized keys in config
+
+[tuning]
+enc_q_size    = 4               # Encoder queue size
+file_q_size   = 64              # FileWriter queue size
+pkt_hdr       = 12              # Packet header size in SHM
+pkt_size      = 409616          # Total packet size (16 + MAX_PNG_SIZE)
+max_err_ns    = 1500000         # PLL error limit (nanoseconds)
+alpha         = 0.01            # PLL gain alpha
+beta          = 0.000025        # PLL gain beta (2.5e-5)
