@@ -193,8 +193,9 @@ int main(int argc, char* argv[]) {
 
         totalMsgs += parse_ubx_buffer(work, workLen, [&](const NavPvtLog& r) {
             g_ring.push(r);   
-            if (shm && (r.flags & 0x01) && r.fixType >= 2)
-                shm->gps_packet.push(GPSData{ r.lat / 10, r.lon / 10 });
+            if (shm && (r.flags & 0x01) && r.fixType >= 2) {
+                shm->gps_packet.push(GPSData{ 0, r.lat, r.lon });
+            }
         });
 
         size_t keep = (workLen > NAV_PVT_LEN - 1) ? NAV_PVT_LEN - 1 : workLen;

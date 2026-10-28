@@ -1,96 +1,148 @@
-#!/usr/bin/env python3
-
 import os
-import re
-import sys
-import statistics
+import pandas as pd
+import numpy as np
 
+# กำหนดพาธไฟล์อินพุตและไฟล์เอาต์พุต
+input_file = '/home/kanchai/Desktop/SHM/sim/Log/process_timing.txt'
+output_file = '/home/kanchai/Desktop/SHM/sim/Log/process_duration_summary.txt'
 
-def extract_timestamp(filename: str):
-    """ดึงตัวเลข timestamp ออกจากชื่อไฟล์ (เช่น 1791186005699442190.png -> 1791186005699442190)"""
-    match = re.search(r"(\d+)", filename)
-    if match:
-        return int(match.group(1))
-    return None
+def process_timestamps():
+    if not os.path.exists(input_file):
+        print(f"Error: ไม่พบไฟล์อินพุตที่ {input_file}")
+        return
 
+    # คอลัมน์ที่บันทึกมาจาก Go (camcap.go)
+    column_names = [
+        'target_deadline', 't_wait_done', 't_pub_start', 't_pub_end',
+        't_read_start', 't_read_end', 't_enc_start', 't_enc_end'
+    ]
 
-def main():
-    # โฟลเดอร์ภาพ (ค่าเริ่มต้น: src/frame)
-    if len(sys.argv) > 1:
-        folder = sys.argv[1]
-    else:
-        folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "/home/kanchai/Desktop/SHM/sim/captures")
+    try:
+        df = pd.read_csv(input_file, sep=r'\s+', comment='#', names=column_names)
+    except Exception as e:
+        print(f"Error ในการอ่านไฟล์: {e}")
+        return
 
-    # ไฟล์ผลลัพธ์ (ค่าเริ่มต้น: jitter_result.text)
-    if len(sys.argv) > 2:
-        out_file = sys.argv[2]
-    else:
-        out_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jitter_result.text")
+    if df.empty:
+        print("Error: ไฟล์ไม่มีข้อมูล")
+        return
 
-    if not os.path.isdir(folder):
-        print(f"ไม่พบโฟลเดอร์: {folder}")
-        sys.exit(1)
+    df_calc = pd.DataFrame()
+    df_calc['FRAME'] = range(1, len(df) + 1)
 
-    # รวบรวม timestamp จากชื่อไฟล์
-    timestamps = []
-    for name in os.listdir(folder):
-        ts = extract_timestamp(name)
-        if ts is not None:
-            timestamps.append(ts)
+    # ----------------------------------------------------------------------------------
+    # 1. การคำนวณระยะเวลา
+    # ----------------------------------------------------------------------------------
+    # 1.1 ความคลาดเคลื่อนเวลาตื่นนอนของโปรแกรม (Timer Wakeup Delay)
+    df_calc['Wakeup_Delay(us)'] = (df['t_wait_done'] - df['target_deadline']) / 1e3
 
-    if len(timestamps) < 2:
-        print("พบไฟล์น้อยเกินไป (ต้องมีอย่างน้อย 2 ไฟล์) จึงคำนวณ jitter ไม่ได้")
-        sys.exit(1)
+    # 1.2 เวลาเขียนภาพลง Shared Memory
+    df_calc['SHM_Write_Time(us)'] = (df['t_pub_end'] - df['t_pub_start']) / 1e3
 
-    # เรียงตามเวลา
-    timestamps.sort()
+    # 1.3 เวลาว่างก่อนเริ่มอ่านภาพจากกล้อง (Preparation Overhead)
+    df_calc['Pre_Read_Delay(us)'] = (df['t_read_start'] - df['t_pub_end']) / 1e3
 
-    # คำนวณ diff (ช่วงเวลา) ระหว่างภาพติดกัน
-    diffs = [timestamps[i + 1] - timestamps[i] for i in range(len(timestamps) - 1)]
+    # 1.4 เวลาดึง/อ่านภาพจากกล้อง
+    df_calc['Camera_Read_Time(ms)'] = (df['t_read_end'] - df['t_read_start']) / 1e6
 
-    # ค่าเฉลี่ยของช่วงเวลา (expected interval)
-    mean_interval = statistics.mean(diffs)
+    # 1.5 เวลาว่างก่อนเริ่ม แปลงไฟล์ภาพ (Pre-Encode Overhead)
+    df_calc['Pre_Enc_Delay(us)'] = (df['t_enc_start'] - df['t_read_end']) / 1e3
 
-    # jitter = ส่วนเบี่ยงเบนของช่วงเวลาแต่ละค่าจากค่าเฉลี่ย
-    jitters = [d - mean_interval for d in diffs]
+    # 1.6 เวลาบีบอัด/แปลงภาพเป็น PNG
+    df_calc['PNG_Encode_Time(ms)'] = (df['t_enc_end'] - df['t_enc_start']) / 1e6
 
-    # สถิติ
-    max_diff = max(diffs)
-    min_diff = min(diffs)
-    mean_jitter = statistics.mean(jitters)
-    std_jitter = statistics.pstdev(jitters) if len(jitters) > 1 else 0.0
-    max_jitter = max(abs(j) for j in jitters)
+    # 1.7 รวมเวลาทำงานจริงของ CPU ในรอบนั้น (Active CPU Processing Time)
+    df_calc['Total_CPU_Work_Time(ms)'] = (
+        (df['t_pub_end'] - df['t_pub_start']) +
+        (df['t_read_end'] - df['t_read_start']) +
+        (df['t_enc_end'] - df['t_enc_start'])
+    ) / 1e6
 
-    # เขียนผลลัพธ์ลงไฟล์ .text
-    with open(out_file, "w", encoding="utf-8") as f:
-        f.write("=== Jitter Analysis ===\n")
-        f.write(f"Folder          : {folder}\n")
-        f.write(f"Number of frames: {len(timestamps)}\n")
-        f.write(f"Number of diffs : {len(diffs)}\n")
-        f.write("\n")
-        f.write("--- Summary (unit: nanosecond) ---\n")
-        f.write(f"Mean interval   : {mean_interval:.0f} ns  ({mean_interval/1e6:.3f} ms)\n")
-        f.write(f"Max interval    : {max_diff} ns  ({max_diff/1e6:.3f} ms)\n")
-        f.write(f"Min interval    : {min_diff} ns  ({min_diff/1e6:.3f} ms)\n")
-        f.write(f"Mean jitter     : {mean_jitter:.0f} ns  ({mean_jitter/1e6:.3f} ms)\n")
-        f.write(f"Std jitter      : {std_jitter:.0f} ns  ({std_jitter/1e6:.3f} ms)\n")
-        f.write(f"Max |jitter|    : {max_jitter:.0f} ns  ({max_jitter/1e6:.3f} ms)\n")
-        f.write("\n")
-        f.write("--- Per-frame detail ---\n")
-        f.write(f"{'Index':>6}  {'Timestamp':>20}  {'Interval(ns)':>15}  {'Interval(ms)':>13}  {'Jitter(ns)':>15}  {'Jitter(ms)':>12}\n")
-        for i in range(len(diffs)):
+    # 1.8 เวลารวมตั้งแต่เริ่มอ่านภาพจนพร้อมใช้งานจริง (Total Frame Latency)
+    df_calc['Total_Frame_Latency(ms)'] = (df['t_pub_end'] - df['t_read_start'].shift(1)) / 1e6
+
+    # 1.9 ระยะเวลาต่อรอบ/ความถี่เฟรมจริง (Cycle Time / Period)
+    df_calc['Frame_Cycle_Time(ms)'] = df['t_pub_start'].diff() / 1e6
+
+    # คำนวณค่าสถิติ
+    avg = df_calc.mean()
+    std = df_calc.std()
+    max_val = df_calc.max()
+    min_val = df_calc.min()
+
+    # ----------------------------------------------------------------------------------
+    # 2. บันทึกรายงานสรุป
+    # ----------------------------------------------------------------------------------
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+
+    # ตัวช่วย: วาดแถบ (bar) แสดงขนาดสัมพัทธ์เทียบกับค่าสูงสุด
+    def bar(value, max_value, width=24):
+        if value is None or max_value is None or max_value <= 0:
+            return ""
+        value = max(0.0, float(value))
+        filled = int(round((value / max_value) * width))
+        return "█" * filled + "░" * (width - filled)
+
+    # รายการเมตริก: (ชื่อแสดง, คอลัมน์ข้อมูล)
+    metrics = [
+        ("Timer Jitter (us)",        "Wakeup_Delay(us)"),
+        ("SHM Write (us)",           "SHM_Write_Time(us)"),
+        ("Pre-Read Gap (us)",        "Pre_Read_Delay(us)"),
+        ("Camera Read (ms)",         "Camera_Read_Time(ms)"),
+        ("Pre-Enc Gap (us)",         "Pre_Enc_Delay(us)"),
+        ("PNG Encode (ms)",          "PNG_Encode_Time(ms)"),
+        ("CPU Work Time (ms)",       "Total_CPU_Work_Time(ms)"),
+        ("Total Frame Latency (ms)", "Total_Frame_Latency(ms)"),
+        ("Frame Cycle Time (ms)",    "Frame_Cycle_Time(ms)"),
+    ]
+
+    with open(output_file, 'w', encoding='utf-8') as f:
+        rule = "═" * 92
+        f.write(rule + "\n")
+        f.write("  📷  PIPELINE PERFORMANCE SUMMARY\n")
+        f.write(rule + "\n")
+        f.write(f"  Input  : {input_file}\n")
+        f.write(f"  Frames : {len(df)}\n")
+        f.write(rule + "\n\n")
+
+        # ---- ตารางสรุปเมตริก (Avg / Min / Max / Std + แถบแนวโน้ม) ----
+        f.write(f"  {'Metric':<24}{'Avg':>12}{'Min':>12}{'Max':>12}{'Std':>12}   Trend\n")
+        f.write("  " + "─" * 90 + "\n")
+        for name, col in metrics:
+            a, mn, mx, sd = avg[col], min_val[col], max_val[col], std[col]
+            f.write(f"  {name:<24}{a:>12.3f}{mn:>12.3f}{mx:>12.3f}{sd:>12.3f}   {bar(a, mx)}\n")
+        f.write("  " + "─" * 90 + "\n\n")
+
+        # ---- ตารางรายเฟรม ----
+        f.write("  PER-FRAME BREAKDOWN\n")
+        f.write("  " + "─" * 90 + "\n")
+        f.write(
+            f"  {'#':>5} | {'Wake(us)':>10} | {'SHM(us)':>10} | {'PreRd(us)':>10} | "
+            f"{'Cam(ms)':>10} | {'PreEn(us)':>10} | {'PNG(ms)':>10} | {'CPU(ms)':>10} | "
+            f"{'Lat(ms)':>10} | {'Cyc(ms)':>10}\n"
+        )
+        f.write("  " + "─" * 90 + "\n")
+
+        for _, row in df_calc.iterrows():
+            lat = row['Total_Frame_Latency(ms)']
+            cyc = row['Frame_Cycle_Time(ms)']
+            lat_s = f"{lat:10.3f}" if pd.notna(lat) else f"{'N/A':>10}"
+            cyc_s = f"{cyc:10.3f}" if pd.notna(cyc) else f"{'N/A':>10}"
             f.write(
-                f"{i+1:>6}  {timestamps[i+1]:>20}  {diffs[i]:>15}  "
-                f"{diffs[i]/1e6:>13.3f}  {jitters[i]:>15.0f}  {jitters[i]/1e6:>12.3f}\n"
+                f"  {int(row['FRAME']):5d} | "
+                f"{row['Wakeup_Delay(us)']:10.3f} | "
+                f"{row['SHM_Write_Time(us)']:10.3f} | "
+                f"{row['Pre_Read_Delay(us)']:10.3f} | "
+                f"{row['Camera_Read_Time(ms)']:10.3f} | "
+                f"{row['Pre_Enc_Delay(us)']:10.3f} | "
+                f"{row['PNG_Encode_Time(ms)']:10.3f} | "
+                f"{row['Total_CPU_Work_Time(ms)']:10.3f} | "
+                f"{lat_s} | "
+                f"{cyc_s}\n"
             )
+        f.write("  " + "─" * 90 + "\n")
 
-    # แสดงสรุปบนหน้าจอ
-    print(f"วิเคราะห์เสร็จสิ้น: {len(timestamps)} เฟรม, {len(diffs)} ช่วงเวลา")
-    print(f"Mean interval : {mean_interval/1e6:.3f} ms")
-    print(f"Std jitter    : {std_jitter/1e6:.3f} ms")
-    print(f"Max |jitter|  : {max_jitter/1e6:.3f} ms")
-    print(f"ผลลัพธ์ถูกบันทึกที่: {out_file}")
+    print(f"บันทึกผลการคำนวณเรียบร้อยแล้วที่: {output_file}")
 
-
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    process_timestamps()

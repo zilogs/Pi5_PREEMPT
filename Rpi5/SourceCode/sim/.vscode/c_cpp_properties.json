@@ -4,13 +4,18 @@
             "name": "Linux",
             "includePath": [
                 "${workspaceFolder}/**",
+                "/usr/include",
+                "/usr/local/include",
                 "/usr/include/opencv4"
             ],
-            "defines": [],
-            "compilerPath": "/usr/bin/clang",
+            "defines": [
+                "_GNU_SOURCE",
+                "HAS_NEON=1"
+            ],
+            "compilerPath": "/usr/bin/gcc",
             "cStandard": "c17",
             "cppStandard": "c++17",
-            "intelliSenseMode": "linux-clang-arm64"
+            "intelliSenseMode": "linux-gcc-arm64"
         }
     ],
     "version": 4

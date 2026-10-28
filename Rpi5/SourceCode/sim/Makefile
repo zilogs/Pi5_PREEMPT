@@ -24,15 +24,15 @@ build: $(RECEIVER) $(WRITER) $(CAM_BIN)
 $(RECEIVER) $(WRITER): %: %.cpp shm_common.h
 	$(CXX) $(CXXFLAGS) -o $@ $< $(if $(filter writer,$@),$(LDFLAGS) -lgpiodcxx -lgpiod,$(LDFLAGS))
 
-# Compile camera Go code
+# Compile camera Go code (เอา GOTOOLCHAIN=local ออก)
 $(CAM_BIN): $(CAM_SRCS)
-	cd $(CAM_DIR) && GOTOOLCHAIN=local go build -o $(CAM_BIN_NAME) .
+	cd $(CAM_DIR) && go build -o $(CAM_BIN_NAME) .
 
 run: build
 	@sudo -v && sudo rm -f /dev/shm/$(VIDEO_SHM) /dev/shm/$(SENSOR_SHM)
 	@sudo taskset -c $(set_CORE) ./$(WRITER) &
 	@sleep 0.5; sudo taskset -c $(set_CORE) ./$(RECEIVER) &
-	@sleep 0.5; sudo env GODEBUG=asyncpreemptoff=1 taskset -c $(set_CORE) ./$(CAM_BIN); \
+	@sleep 0.5; sudo env GODEBUG=asyncpreemptoff=1 taskset -c $(set_CORE) ./$(CAM_BIN) -config $(CAM_DIR)/config.toml; \
 	RC=$$?; sudo pkill -f '^./($(WRITER)|$(RECEIVER))' 2>/dev/null; wait; exit $$RC
 
 stop:

@@ -23,7 +23,8 @@ inline T get_val(const uint8_t* pay, size_t offset) {
 // ค่าดิบที่ถอดแล้ว ส่งผ่าน ring ไปให้ thread เบื้องหลังจัดรูปแบบและเขียนไฟล์
 struct NavPvtLog {
     uint32_t iTOW, tAcc, hAcc, vAcc, sAcc, headAcc;
-    int32_t  nano, lon, lat, height, hMSL, velN, velE, velD, gSpeed, headMot;
+    int32_t  nano, height, hMSL, velN, velE, velD, gSpeed, headMot;
+    double   lon, lat;  
     uint16_t year, pDOP;
     uint8_t  month, day, hour, minute, second, valid, fixType, flags, numSV;
 };
@@ -89,8 +90,8 @@ inline void decode_nav_pvt(const uint8_t* msg, NavPvtLog& out) {
     out.flags   = get_val<uint8_t>(pay, 21);
     out.numSV   = get_val<uint8_t>(pay, 23);
 
-    out.lon     = get_val<int32_t>(pay, 24);
-    out.lat     = get_val<int32_t>(pay, 28);
+    out.lon     = get_val<double>(pay, 24);
+    out.lat     = get_val<double>(pay, 28);
     out.height  = get_val<int32_t>(pay, 32);
     out.hMSL    = get_val<int32_t>(pay, 36);
     out.hAcc    = get_val<uint32_t>(pay, 40);

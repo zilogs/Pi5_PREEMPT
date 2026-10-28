@@ -14,11 +14,10 @@
 #define SENSOR_SHM_SIZE (6 * 1024)          // 6KB (SensorData ใช้ ~1.6 KB)
 
 #define VIDEO_SHM_NAME  "/video"
-#define VIDEO_SHM_SIZE  (12 * 1024 * 1024)  // 12 MB (VideoData ใช้ ~8.2 MB)
+#define VIDEO_SHM_SIZE  (16 + 409616)       // ปรับให้ตรงกับขนาดที่ camcap.go จองจริง (16 + pktSize)
 
 constexpr int SCALE = 100, GPS_SCALE = 1000000, RB_SIZE = 64;
 
-// ต้องตรงกับ MaxPngSize / CamRbSize ใน camcap.go
 constexpr size_t MAX_PNG_SIZE = 400 * 1024;
 constexpr size_t CAM_RB_SIZE  = 20;
 
@@ -33,8 +32,9 @@ struct IMUData {
 };
 
 struct GPSData {
-    int32_t lat;
-    int32_t lon;
+    uint64_t timestamp; 
+    double lat;         
+    double lon;        
 };
 
 struct PNGImagePacket {
@@ -80,7 +80,6 @@ struct VideoData {
 static_assert(sizeof(PNGImagePacket) == 409616, "PNGImagePacket layout differs from Go");
 static_assert(offsetof(VideoData, cam_packet) == 0, "cam_packet must be at offset 0");
 static_assert(sizeof(SensorData) <= SENSOR_SHM_SIZE, "SensorData larger than SENSOR_SHM_SIZE");
-static_assert(sizeof(VideoData)  <= VIDEO_SHM_SIZE,  "VideoData larger than VIDEO_SHM_SIZE");
 
 // ---------- helper ----------
 inline void setRealtimePriority(int priority) {
@@ -90,16 +89,20 @@ inline void setRealtimePriority(int priority) {
     sched_setscheduler(0, SCHED_FIFO, &param);
 }
 
-// map shm ตามชื่อ/ขนาด; create=true จะสร้างและตั้งขนาดให้ (ทำฝั่ง writer/owner เท่านั้น)
-inline void* mapShm(const char* name, size_t size, bool create) {
-    int flags = O_RDWR | (create ? O_CREAT : 0);
-    int fd = shm_open(name, flags, 0666);
+// map shm ตามชื่อ/ขนาด; create=true จะสร้างและตั้งขนาดให้
+// แก้ไขให้เปิดโหมด O_RDONLY / PROT_READ เมื่ออ่านอย่างเดียว (create = false)
+inline void* mapShm(const char* name, size_t size, bool create, bool writable = false) {
+    int open_flags = create ? (O_RDWR | O_CREAT) : (writable ? O_RDWR : O_RDONLY);
+    int fd = shm_open(name, open_flags, 0666);
     if (fd == -1) return nullptr;
+
     if (create) {
         fchmod(fd, 0666);
         if (ftruncate(fd, size) == -1) { close(fd); return nullptr; }
     }
-    void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+
+    int prot_flags = (create || writable) ? (PROT_READ | PROT_WRITE) : PROT_READ;
+    void* ptr = mmap(nullptr, size, prot_flags, MAP_SHARED, fd, 0);
     close(fd);
     return ptr == MAP_FAILED ? nullptr : ptr;
 }

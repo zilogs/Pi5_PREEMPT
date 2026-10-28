@@ -1,38 +1,46 @@
 #pragma once
 #include <atomic>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sched.h>
 #include <sys/stat.h>
 
-#define SHM_NAME "/imu_shm"
-#define SHM_SIZE (6 * 1024 * 1024) // กำหนดขนาดรวมเป็น 6 MB
+// ---------- ชื่อและขนาดของ shm แต่ละก้อน ----------
+#define SENSOR_SHM_NAME "/sensor"
+#define SENSOR_SHM_SIZE (6 * 1024)          // 6KB (SensorData ใช้ ~1.6 KB)
 
-constexpr int SCALE = 100, GPS_SCALE = 1000000, RB_SIZE = 64; 
+#define VIDEO_SHM_NAME  "/video"
+#define VIDEO_SHM_SIZE  (16 + 409616)       // ปรับให้ตรงกับขนาดที่ camcap.go จองจริง (16 + pktSize)
 
-// กำหนดขนาดสำหรับภาพ PNG (เช่น 50 KB ต่อรูป) และจำนวนคิว 100 เฟรม (รวม ~5MB สำหรับ cam_packet)
-constexpr size_t MAX_PNG_SIZE = 50 * 1024; 
-constexpr size_t CAM_RB_SIZE = 100;         
+constexpr int SCALE = 100, GPS_SCALE = 1000000, RB_SIZE = 64;
 
-struct IMUData { 
-    float roll; 
-    float pitch; 
-    float yaw; 
-    uint16_t count; 
+constexpr size_t MAX_PNG_SIZE = 400 * 1024;
+constexpr size_t CAM_RB_SIZE  = 20;
+
+struct IMUData {
+    uint64_t timestamp;  // [ns]
+    double w_RS_S_x;     // [rad s^-1]
+    double w_RS_S_y;     // [rad s^-1]
+    double w_RS_S_z;     // [rad s^-1]
+    double a_RS_S_x;     // [m s^-2]
+    double a_RS_S_y;     // [m s^-2]
+    double a_RS_S_z;     // [m s^-2]
 };
 
-struct GPSData { 
-    int32_t lat; 
-    int32_t lon; 
+struct GPSData {
+    uint64_t timestamp; 
+    double lat;         
+    double lon;        
 };
 
-// โครงสร้างเก็บข้อมูลภาพ PNG แบบก้อนไบต์
 struct PNGImagePacket {
     uint64_t timestamp;
     uint32_t data_size;
-    uint8_t data[MAX_PNG_SIZE]; 
+    uint8_t data[MAX_PNG_SIZE];
 };
 
 template <typename T, size_t Size>
@@ -47,7 +55,7 @@ struct RingBuffer {
         head.store(next, std::memory_order_release);
         return true;
     }
-    
+
     bool pop(T& item) {
         size_t t = tail.load(std::memory_order_relaxed);
         if (t == head.load(std::memory_order_acquire)) return false;
@@ -57,23 +65,54 @@ struct RingBuffer {
     }
 };
 
-struct SharedData {
-    RingBuffer<IMUData, RB_SIZE> imu_packet;         // อยู่ในโซน 1MB แรก (ร่วมกับ GPS)
-    RingBuffer<GPSData, RB_SIZE> gps_packet;     
-    RingBuffer<PNGImagePacket, CAM_RB_SIZE> cam_packet; // โซน ~5MB สำหรับเก็บภาพ 100 เฟรม
+// ---------- /sensor : IMU + GPS ----------
+struct SensorData {
+    RingBuffer<IMUData, RB_SIZE> imu_packet;   // offset 0
+    RingBuffer<GPSData, RB_SIZE> gps_packet;   // ต่อจาก imu_packet
 };
 
-inline SharedData* initSharedMemory(bool create = false, int priority = 80) {
+// ---------- /video : เฟรมภาพ ----------
+struct VideoData {
+    RingBuffer<PNGImagePacket, CAM_RB_SIZE> cam_packet; // offset 0
+};
+
+// เช็กตอน compile ว่า layout ตรงกับฝั่ง Go (camcap.go)
+static_assert(sizeof(PNGImagePacket) == 409616, "PNGImagePacket layout differs from Go");
+static_assert(offsetof(VideoData, cam_packet) == 0, "cam_packet must be at offset 0");
+static_assert(sizeof(SensorData) <= SENSOR_SHM_SIZE, "SensorData larger than SENSOR_SHM_SIZE");
+
+// ---------- helper ----------
+inline void setRealtimePriority(int priority) {
+    if (priority <= 0) return;
     sched_param param{};
     param.sched_priority = priority;
     sched_setscheduler(0, SCHED_FIFO, &param);
+}
 
-    int fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
-    if (create && fd != -1) {
+// map shm ตามชื่อ/ขนาด; create=true จะสร้างและตั้งขนาดให้
+// แก้ไขให้เปิดโหมด O_RDONLY / PROT_READ เมื่ออ่านอย่างเดียว (create = false)
+inline void* mapShm(const char* name, size_t size, bool create, bool writable = false) {
+    int open_flags = create ? (O_RDWR | O_CREAT) : (writable ? O_RDWR : O_RDONLY);
+    int fd = shm_open(name, open_flags, 0666);
+    if (fd == -1) return nullptr;
+
+    if (create) {
         fchmod(fd, 0666);
-        ftruncate(fd, SHM_SIZE); // จองพื้นที่รวม 6MB ตามที่ตั้งค่า
+        if (ftruncate(fd, size) == -1) { close(fd); return nullptr; }
     }
-    void* ptr = (fd != -1) ? mmap(0, SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) : MAP_FAILED;
-    if (fd != -1) close(fd);
-    return ptr == MAP_FAILED ? nullptr : static_cast<SharedData*>(ptr);
+
+    int prot_flags = (create || writable) ? (PROT_READ | PROT_WRITE) : PROT_READ;
+    void* ptr = mmap(nullptr, size, prot_flags, MAP_SHARED, fd, 0);
+    close(fd);
+    return ptr == MAP_FAILED ? nullptr : ptr;
+}
+
+inline SensorData* initSensorShm(bool create = false, int priority = 80) {
+    setRealtimePriority(priority);
+    return static_cast<SensorData*>(mapShm(SENSOR_SHM_NAME, SENSOR_SHM_SIZE, create));
+}
+
+inline VideoData* initVideoShm(bool create = false, int priority = 80) {
+    setRealtimePriority(priority);
+    return static_cast<VideoData*>(mapShm(VIDEO_SHM_NAME, VIDEO_SHM_SIZE, create));
 }

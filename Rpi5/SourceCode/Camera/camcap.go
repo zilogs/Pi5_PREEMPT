@@ -1,11 +1,58 @@
 package main
 
+/*
+#cgo CFLAGS: -O3 -D_GNU_SOURCE
+#cgo LDFLAGS: -ldeflate
+#include <libdeflate.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+static struct libdeflate_compressor *comp;
+static uint8_t *flt;
+static int W, H;
+
+static inline int enc_init(int w, int h) {
+	W = w; H = h;
+	comp = libdeflate_alloc_compressor(1);
+	flt = malloc((size_t)h * (w + 1));
+	return comp && flt;
+}
+
+static inline void put32(uint8_t *p, uint32_t v) {
+	p[0] = v >> 24; p[1] = v >> 16; p[2] = v >> 8; p[3] = v;
+}
+
+static inline void finish_chunk(uint8_t *p, uint32_t len) {
+	put32(p, len); put32(p + 8 + len, libdeflate_crc32(0, p + 4, 4 + len));
+}
+
+static inline size_t enc_png_yuv420(const uint8_t *yuv_pix, uint8_t *out, size_t cap) {
+	size_t o = 33;
+	memcpy(out, "\x89PNG\r\n\x1a\n", 8); memcpy(out + 12, "IHDR", 4);
+	put32(out + 16, W); put32(out + 20, H);
+	memset(out + 24, 0, 5); out[24] = 8;
+	finish_chunk(out + 8, 13);
+
+	for (int y = 0; y < H; y++) {
+		const uint8_t *s = yuv_pix + (size_t)y * W;
+		uint8_t *d = flt + (size_t)y * (W + 1);
+		d[0] = 1; d[1] = s[0];
+		for (int x = 1; x < W; x++) d[x + 1] = s[x] - s[x - 1];
+	}
+	size_t z = libdeflate_zlib_compress(comp, flt, (size_t)H * (W + 1), out + o + 8, cap - o - 24);
+	memcpy(out + o + 4, "IDAT", 4); finish_chunk(out + o, (uint32_t)z); o += 12 + z;
+	memcpy(out + o + 4, "IEND", 4); finish_chunk(out + o, 0); return o + 12;
+}
+*/
+import "C"
+
 import (
+	"bufio"
 	"encoding/binary"
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -13,301 +60,244 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
 
 	"github.com/BurntSushi/toml"
+	"golang.org/x/sys/unix"
 )
 
 var cfg struct {
 	Camera struct {
 		Width, Height, FPS int
 		Command, Format    string
-		Args               []string
-		Decimate           int64
-		UseTaskset         bool `toml:"use_taskset"`
+		Decimate           int
 	}
-	CPU struct {
-		Core     int
-		FileCore int `toml:"file_core"`
+	SHM struct {
+		Path     string
+		MaxPNGKB int `toml:"max_png_kb"`
 	}
-	Priority struct{ Publisher, Reader, Camera, Encoder int32 }
-	SHM      struct {
-		Path      string
-		LatencyMS float64 `toml:"latency_ms"`
-		MaxPNGKB  int     `toml:"max_png_kb"`
-		RBSize    int     `toml:"rb_size"`
-	}
-	Runtime struct {
-		GOMAXPROCS int `toml:"gomaxprocs"`
-		MemLimitMB int `toml:"mem_limit_mb"`
-	}
-	Output struct {
-		Enabled   bool
-		Dir       string
-		MinFreeMB int64 `toml:"min_free_mb"`
-	}
-	Stats struct {
-		IntervalMS     int  `toml:"interval_ms"`
-		LogUnknownKeys bool `toml:"log_unknown_keys"`
+	LogTimestamp struct {
+		Enabled  bool   `toml:"enabled"`
+		FilePath string `toml:"file_path"`
+	} `toml:"log_Timestamp"`
+	LogImage struct {
+		SaveFrames bool   `toml:"save_frames"`
+		OutputDir  string `toml:"output_dir"`
+	} `toml:"log_image"`
+	RT struct {
+		Core     int `toml:"core"`
+		CamCore  int `toml:"cam_core"`
+		Priority int `toml:"priority"`
 	}
 }
 
-const (
-	encQSize, fileQSize   = 4, 64
-	pktHdr, pktSize       = 12, 409616
-	maxErrNS, alpha, beta = 1_500_000, 0.01, 2.5e-5
-)
+var stop atomic.Bool
 
-var (
-	shmErr, camMissed, fileDropped, noFrame atomic.Uint64
-	fileTid                                 atomic.Int64
-)
-
-func die(a ...any) { fmt.Fprintln(os.Stderr, a...); os.Exit(1) }
-func check(err error) { if err != nil { die(err) } }
-
-// ดึงเวลาแบบ CLOCK_MONOTONIC ให้ตรงกับ writer.cpp (clock_gettime)
-func nowMonotonicNs() int64 {
-	var ts syscall.Timespec
-	// 1 คือ CLOCK_MONOTONIC ในระบบ Linux
-	syscall.Syscall(syscall.SYS_CLOCK_GETTIME, 1, uintptr(unsafe.Pointer(&ts)), 0)
+func nowNs() int64 {
+	var ts unix.Timespec
+	_ = unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts)
 	return ts.Nano()
 }
 
-func setupMask(tid int, prio int32, core int) syscall.Errno {
-	mask := uint64(1) << uint(core)
-	syscall.Syscall(syscall.SYS_SCHED_SETAFFINITY, uintptr(tid), 8, uintptr(unsafe.Pointer(&mask)))
-	if prio == 0 { return 0 }
-	_, _, e := syscall.Syscall(syscall.SYS_SCHED_SETSCHEDULER, uintptr(tid), 1, uintptr(unsafe.Pointer(&prio)))
-	return e
-}
-
-func lockRT(prio int32) {
-	runtime.LockOSThread()
-	if e := setupMask(syscall.Gettid(), prio, cfg.CPU.Core); e != 0 {
-		fmt.Fprintf(os.Stderr, "RT error: %v\n", e)
+func waitUntilPrecision(targetNs int64) {
+	if targetNs-nowNs() > 150_000 {
+		ts := unix.NsecToTimespec(targetNs - 150_000)
+		for unix.ClockNanosleep(unix.CLOCK_MONOTONIC, 1, &ts, nil) == unix.EINTR {}
 	}
+	for nowNs() < targetNs {}
 }
 
-func pin(pid int, prio int32) {
-	entries, _ := os.ReadDir(fmt.Sprintf("/proc/%d/task", pid))
-	for _, e := range entries {
-		if tid, _ := strconv.Atoi(e.Name()); tid > 0 && tid != int(fileTid.Load()) {
-			setupMask(tid, prio, cfg.CPU.Core)
+// ระบบ Async Log
+func startAsyncLog(logPath string) (chan<- [8]int64, func()) {
+	_ = os.MkdirAll(filepath.Dir(logPath), 0755)
+	f, _ := os.Create(logPath)
+	w := bufio.NewWriterSize(f, 32<<10)
+	ch, done := make(chan [8]int64, 8192), make(chan struct{})
+
+	go func() {
+		defer close(done)
+		for r := range ch {
+			fmt.Fprintf(w, "%d %d %d %d %d %d %d %d\n", r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7])
+		}
+		_ = w.Flush()
+		_ = f.Close()
+	}()
+
+	return ch, func() { close(ch); <-done }
+}
+
+// ระบบบันทึกภาพอัตโนมัติแบบ Async (Non-blocking)
+func startAsyncImageSaver(outputDir string) (chan<- []byte, func()) {
+	_ = os.MkdirAll(outputDir, 0755)
+	saveCh, done := make(chan []byte, 128), make(chan struct{})
+
+	go func() {
+		defer close(done)
+		for pngData := range saveCh {
+			outPath := filepath.Join(outputDir, fmt.Sprintf("%d.png", nowNs()))
+			_ = os.WriteFile(outPath, pngData, 0644)
+		}
+	}()
+
+	return saveCh, func() { close(saveCh); <-done }
+}
+
+func readFrames(pipeFile *os.File, buf []byte, decimate int) error {
+	for range decimate {
+		if _, err := io.ReadFull(pipeFile, buf); err != nil {
+			return err
 		}
 	}
+	return nil
 }
-
-// ปรับปรุง waitUntil ให้ใช้ CLOCK_NANOSLEEP แบบ ABSOLUTE คล้าย sleepUntilNs ใน C++
-func waitUntil(t int64) {
-	targetEarly := t - 100_000
-	if targetEarly > nowMonotonicNs() {
-		ts := syscall.NsecToTimespec(targetEarly)
-		// 0 ใน argument แรกคือ TIMER_ABSTIME
-		syscall.Syscall6(syscall.SYS_CLOCK_NANOSLEEP, 0, 1, uintptr(unsafe.Pointer(&ts)), 0, 0, 0)
-	}
-	for nowMonotonicNs() < t {}
-}
-
-func diskFull() bool {
-	var st syscall.Statfs_t
-	dir := append([]byte(cfg.Output.Dir), 0)
-	if _, _, e := syscall.Syscall(syscall.SYS_STATFS, uintptr(unsafe.Pointer(&dir[0])), uintptr(unsafe.Pointer(&st)), 0); e != 0 {
-		return false
-	}
-	return uint64(st.Bavail)*uint64(st.Bsize) < uint64(cfg.Output.MinFreeMB)<<20
-}
-
-type pll struct {
-	base, n, lateRun      int64
-	pred, period, lastArr float64
-}
-
-func (p *pll) next(now int64) (int64, int) {
-	nominal := 1e9 / float64(cfg.Camera.FPS)
-	if p.n == 0 {
-		p.base, p.period, p.n = now, nominal, 1
-		return now, 0
-	}
-	arr := float64(now - p.base)
-	gap := arr - p.lastArr
-	p.lastArr = arr
-	p.pred += p.period
-	err, missed := arr-p.pred, 0
-	if err > p.period/2 && gap > 0.7*p.period {
-		if p.lateRun++; p.lateRun >= 2 {
-			missed = int(math.Round(err / p.period))
-			p.pred += float64(missed) * p.period
-			err, p.lateRun = arr-p.pred, 0
-		}
-	} else { p.lateRun = 0 }
-	err = math.Max(-maxErrNS, math.Min(maxErrNS, err))
-	p.pred += alpha * err
-	p.period = math.Max(nominal*0.995, math.Min(nominal*1.005, p.period+beta*err))
-	return p.base + int64(p.pred), missed
-}
-
-type frame struct { ts int64; data []byte }
 
 func main() {
-	cfgPath := flag.String("config", "", "")
+	cfg.RT.Core, cfg.RT.CamCore, cfg.RT.Priority = 3, 2, 90
+	cfgPath := flag.String("config", "config.toml", "")
 	flag.Parse()
-	paths := []string{*cfgPath}
-	if *cfgPath == "" {
-		exe, _ := os.Executable()
-		paths = []string{"config.toml", filepath.Join(filepath.Dir(exe), "config.toml")}
-	}
-	var loaded string
-	for _, p := range paths {
-		if _, err := toml.DecodeFile(p, &cfg); err == nil { loaded = p; break } else if !os.IsNotExist(err) { check(err) }
-	}
-	if loaded == "" { die("ไม่พบ config.toml") }
-
-	cc, core, fileCore, outDir := &cfg.Camera, cfg.CPU.Core, cfg.CPU.FileCore, cfg.Output.Dir
-	W, H := cc.Width, cc.Height
-	maxPng := cfg.SHM.MaxPNGKB << 10
-	frameSize, lumaStep := W*H, 1
-	switch cc.Format {
-	case "yuyv":
-		frameSize, lumaStep = W*H*2, 2
-	case "yuv420":
-		frameSize, lumaStep = W*H*3/2, 1
+	if _, err := toml.DecodeFile(*cfgPath, &cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "Config Error:", err); os.Exit(1)
 	}
 
-	os.MkdirAll(outDir, 0755)
-	runtime.GOMAXPROCS(cfg.Runtime.GOMAXPROCS)
-	debug.SetGCPercent(-1)
-	debug.SetMemoryLimit(int64(cfg.Runtime.MemLimitMB) << 20)
-	syscall.RawSyscall(syscall.SYS_MLOCKALL, 3, 0, 0)
-	pin(os.Getpid(), 0)
+	W, H := cfg.Camera.Width, cfg.Camera.Height
+	decimate := max(cfg.Camera.Decimate, 1)
+	periodNs := int64(time.Second) / int64(max(cfg.Camera.FPS/decimate, 1))
+	maxPng := min(cfg.SHM.MaxPNGKB<<10, 409616-12)
 
-	shmSize := int64(16 + cfg.SHM.RBSize*pktSize)
-	f, err := os.OpenFile(cfg.SHM.Path, os.O_RDWR|os.O_CREATE, 0666)
-	check(err); f.Chmod(0666); check(f.Truncate(shmSize))
-	mem, err := syscall.Mmap(int(f.Fd()), 0, int(shmSize), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
-	check(err); f.Close()
-	head, tail := (*uint64)(unsafe.Pointer(&mem[0])), (*uint64)(unsafe.Pointer(&mem[8]))
-	atomic.StoreUint64(head, 0); atomic.StoreUint64(tail, 0)
+	// Log Setup
+	var recCh chan<- [8]int64
+	var stopLog = func() {}
+	if cfg.LogTimestamp.Enabled {
+		logPath := cfg.LogTimestamp.FilePath
+		if logPath == "" { logPath = "./Log/process_timing.txt" }
+		recCh, stopLog = startAsyncLog(logPath)
+	}
 
-	poolN := encQSize + fileQSize + 8
-	pngPool := make(chan []byte, poolN)
-	for i := 0; i < poolN; i++ { pngPool <- make([]byte, 0, maxPng) }
-	encQ, fileQueue := make(chan frame, encQSize), make(chan frame, fileQSize)
+	// Automatic Image Saver Setup
+	var saveImgCh chan<- []byte
+	var stopSaver = func() {}
 
-	go func() {
-		runtime.LockOSThread()
-		tid := syscall.Gettid()
-		fileTid.Store(int64(tid))
-		setupMask(tid, 0, fileCore)
-		var zero int32
-		syscall.Syscall(syscall.SYS_SCHED_SETSCHEDULER, uintptr(tid), 0, uintptr(unsafe.Pointer(&zero)))
-		syscall.Setpriority(syscall.PRIO_PROCESS, tid, 15)
+	if cfg.LogImage.SaveFrames {
+		outDir := cfg.LogImage.OutputDir
+		if outDir == "" { outDir = "./Log/captures" }
+		saveImgCh, stopSaver = startAsyncImageSaver(outDir)
+	}
 
-		n, full := 0, false
-		for req := range fileQueue {
-			if n++; n%64 == 1 { full = diskFull() }
-			if full { fileDropped.Add(1) } else { os.WriteFile(filepath.Join(cfg.Output.Dir, fmt.Sprintf("%d.png", req.ts)), req.data, 0644) }
-			pngPool <- req.data[:0]
-		}
-	}()
+	// SHM Setup
+	shmPath := cfg.SHM.Path
+	if shmPath == "" { shmPath = "/dev/shm/video" }
+	f, err := os.OpenFile(shmPath, os.O_RDWR|os.O_CREATE, 0666)
+	if err != nil { panic(err) }
+	_ = f.Truncate(16 + 409616)
+	mem, err := unix.Mmap(int(f.Fd()), 0, 16+409616, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
+	if err != nil { panic(err) }
+	_ = f.Close()
 
-	rep := strings.NewReplacer("{width}", strconv.Itoa(W), "{height}", strconv.Itoa(H), "{fps}", strconv.Itoa(cc.FPS), "{core}", strconv.Itoa(core))
-	args := append([]string{cc.Command}, cc.Args...)
-	for i := range args { args[i] = rep.Replace(args[i]) }
-	if cc.UseTaskset { args = append([]string{"taskset", "-c", strconv.Itoa(core)}, args...) }
+	statePtr := (*uint32)(unsafe.Pointer(&mem[0]))
+	atomic.StoreUint32(statePtr, 0)
+	dataMem, destSHM := mem[16:], mem[28:]
+
+	// Subprocess Setup
+	args := []string{"taskset", "-c", strconv.Itoa(cfg.RT.CamCore), cfg.Camera.Command,
+		"--width", strconv.Itoa(W), "--height", strconv.Itoa(H),
+		"--framerate", strconv.Itoa(cfg.Camera.FPS), "--codec", "yuv420",
+		"--shutter", "10000", "--gain", "1.5", "--awb", "indoor",
+		"--nopreview", "-t", "0", "-o", "-"}
+
 	cam := exec.Command(args[0], args[1:]...)
 	pipe, err := cam.StdoutPipe()
-	check(err); check(cam.Start())
-	pin(cam.Process.Pid, cfg.Priority.Camera)
-	if pf, ok := pipe.(*os.File); ok { syscall.Syscall(syscall.SYS_FCNTL, pf.Fd(), 1031, 4<<20) }
+	if err != nil { panic(err) }
+	if err := cam.Start(); err != nil { panic(err) }
 	
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	go func() { <-sig; cam.Process.Kill(); time.Sleep(300 * time.Millisecond); os.Exit(0) }()
+	pipeFile := pipe.(*os.File)
+	_, _ = unix.FcntlInt(pipeFile.Fd(), unix.F_SETPIPE_SZ, 4<<20)
 
+	sigStop := make(chan os.Signal, 1)
+	signal.Notify(sigStop, os.Interrupt, syscall.SIGTERM)
 	go func() {
-		lockRT(cfg.Priority.Reader)
-		buf, pix := make([]byte, frameSize), W*H
-		luma := make([]byte, pix)
-		enc := newPNGEnc(W, H, deflateLevel)
-		var pl pll
-		var frameIdx, lastBucket int64 = 0, -1
+		<-sigStop
+		stop.Store(true)
+		_ = cam.Process.Kill()
+	}()
 
-		for {
-			_, e1 := io.ReadFull(pipe, buf[:4096])
-			// ใช้ nowMonotonicNs() เพื่อให้ฐานเวลาตรงกับ writer.cpp
-			now := nowMonotonicNs()
-			_, e2 := io.ReadFull(pipe, buf[4096:])
-			if e1 != nil || e2 != nil { die(e1, e2) }
-			ts, missed := pl.next(now)
-			camMissed.Add(uint64(missed))
-			idx := frameIdx + int64(missed)
-			frameIdx = idx + 1
-			if b := idx / cc.Decimate; b == lastBucket { continue } else { lastBucket = b }
-			src := buf[:pix]
-			if lumaStep != 1 {
-				for i := range luma { luma[i] = buf[i*lumaStep] }
-				src = luma
-			}
-			out := <-pngPool
-			n := enc.encode(out[:maxPng], src)
-			if n == 0 {
-				pngPool <- out[:0]; shmErr.Add(1); continue
-			}
+	C.enc_init(C.int(W), C.int(H))
+	frame, encBuf := make([]byte, W*H*3/2), make([]byte, maxPng)
+
+	encode := func() int {
+		return int(C.enc_png_yuv420((*C.uint8_t)(unsafe.Pointer(&frame[0])), (*C.uint8_t)(unsafe.Pointer(&encBuf[0])), C.size_t(len(encBuf))))
+	}
+
+	// Real-Time Scheduler Setup
+	debug.SetGCPercent(-1)
+	_ = unix.Mlockall(unix.MCL_CURRENT | unix.MCL_FUTURE)
+	runtime.LockOSThread()
+	
+	var cpuSet unix.CPUSet; cpuSet.Set(cfg.RT.Core)
+	_ = unix.SchedSetaffinity(0, &cpuSet)
+	param := struct{ priority int32 }{priority: int32(cfg.RT.Priority)}
+	_, _, _ = syscall.RawSyscall(syscall.SYS_SCHED_SETSCHEDULER, 0, 1, uintptr(unsafe.Pointer(&param)))
+
+	// Prime Warmup
+	if err := readFrames(pipeFile, frame, decimate); err != nil {
+		fmt.Fprintln(os.Stderr, "camera prime read failed:", err); return
+	}
+	encN := encode()
+	tEncEnd := nowNs()
+	nextDeadline := nowNs() + periodNs
+
+	// Real-Time Main Loop
+	for !stop.Load() {
+		targetDeadline := nextDeadline
+		waitUntilPrecision(targetDeadline)
+		tWaitDone := nowNs()
+
+		// Publish SHM
+		tPubStart := nowNs()
+		atomic.StoreUint32(statePtr, 0)
+		copy(destSHM, encBuf[:encN])
+		binary.LittleEndian.PutUint64(dataMem[0:8], uint64(tEncEnd))
+		binary.LittleEndian.PutUint32(dataMem[8:12], uint32(encN))
+		atomic.StoreUint32(statePtr, 1)
+		tPubEnd := nowNs()
+
+		// บันทึกภาพ PNG ลงโฟลเดอร์แบบอัตโนมัติทันที
+		if cfg.LogImage.SaveFrames {
+			imgCopy := make([]byte, encN)
+			copy(imgCopy, encBuf[:encN])
 			select {
-			case encQ <- frame{ts, out[:n]}:
+			case saveImgCh <- imgCopy:
 			default:
-				pngPool <- out[:0]; fileDropped.Add(1)
 			}
 		}
-	}()
 
-	go func() {
-		lockRT(cfg.Priority.Publisher)
-		lat := int64(cfg.SHM.LatencyMS * 1e6)
-		wr := uint64(0)
+		// Read Frame
+		tReadStart := nowNs()
+		_ = readFrames(pipeFile, frame, decimate)
+		tReadEnd := nowNs()
 
-		for f := range encQ {
-			waitUntil(f.ts + lat)
-			tl := atomic.LoadUint64(tail)
-			rb := uint64(cfg.SHM.RBSize)
-			next := (wr + 1) % rb
-			if wr >= rb || next == tl {
-				pngPool <- f.data[:0]; shmErr.Add(1); continue
+		// Encode PNG
+		tEncStart := nowNs()
+		encN = encode()
+		tEncEnd = nowNs()
+
+		// Record Log
+		if cfg.LogTimestamp.Enabled {
+			select {
+			case recCh <- [8]int64{targetDeadline, tWaitDone, tPubStart, tPubEnd, tReadStart, tReadEnd, tEncStart, tEncEnd}:
+			default:
 			}
-			s := 16 + int(wr)*pktSize + pktHdr
-			n := copy(mem[s:s+maxPng], f.data)
-			binary.LittleEndian.PutUint64(mem[s-pktHdr:], uint64(f.ts))
-			binary.LittleEndian.PutUint32(mem[s-pktHdr+8:], uint32(n))
-
-			if cfg.Output.Enabled {
-				select {
-				case fb := <-pngPool:
-					fb = append(fb[:0], f.data...)
-					select {
-					case fileQueue <- frame{f.ts, fb}:
-					default: pngPool <- fb[:0]; fileDropped.Add(1)
-					}
-				default: fileDropped.Add(1)
-				}
-			}
-			pngPool <- f.data[:0]
-			wr = next
-			atomic.StoreUint64(head, next)
 		}
-	}()
 
-	var last uint64
-	tick := time.NewTicker(time.Duration(cfg.Stats.IntervalMS) * time.Millisecond)
-	for range tick.C {
-		if bad := shmErr.Load() + camMissed.Load() + fileDropped.Load() + noFrame.Load(); bad != last {
-			last = bad
-			fmt.Fprintf(os.Stderr, "shm_err=%d cam_missed=%d file_dropped=%d no_frame=%d\n",
-				shmErr.Load(), camMissed.Load(), fileDropped.Load(), noFrame.Load())
+		nextDeadline += periodNs
+		if n := nowNs(); n > nextDeadline {
+			nextDeadline += ((n-nextDeadline)/periodNs + 1) * periodNs
 		}
 	}
+
+	_ = cam.Process.Kill()
+	stopSaver()
+	stopLog()
 }
