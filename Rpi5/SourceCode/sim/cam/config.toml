@@ -1,0 +1,27 @@
+[camera]
+width       = 640
+height      = 400
+fps         = 60        # รับสตรีมกล้อง 60 FPS
+decimate    = 3         # ดึงประมวลผล 1 ใน 3 เฟรม (60/3 = 20 FPS / คาบ 50ms)
+command     = "rpicam-vid"
+format      = "yuv420"
+
+[rt]
+core        = 3         # CPU Core สำหรับ Main Loop
+cam_core    = 2         # CPU Core สำหรับ Process กล้อง
+priority    = 90        # Real-Time Priority (SCHED_FIFO)
+
+[shm]
+path        = "/dev/shm/video"
+max_png_kb  = 400
+
+[log_Timestamp]
+enabled     = true      # สวิตช์ปิด/เปิด Text Log
+file_path   = "./Log/process_timing.txt"
+
+# ------------------------------------------------------------------
+# ส่วนตั้งค่าการเก็บภาพ PNG
+# ------------------------------------------------------------------
+[log_image]
+save_frames = false                                        # เปิด/ปิด บันทึกเฟรมภาพ PNG อัตโนมัติ
+output_dir  = "./Log/captures" # โฟลเดอร์ปลายทาง
